@@ -260,6 +260,21 @@ def plot_model_specific_visualizations(df, algo_name, save_dir='results'):
             ax.set_ylabel(y_label, fontsize=13)
             ax.set_title(f"2D Pareto: {title}\n{model_type} ({algo_name})", fontsize=14, fontweight='bold')
             ax.grid(True, linestyle='--', alpha=0.4)
+            
+            # --- PLOT GOLDEN BASELINES IF THEY EXIST ---
+            baseline_path = os.path.join(save_dir, 'golden_baselines.csv')
+            if os.path.exists(baseline_path):
+                df_base = pd.read_csv(baseline_path)
+                # Scatter the unconstrained model (red star)
+                std_model = df_base[df_base['model_name'] == 'Standard LR (Unconstrained)'].iloc[0]
+                ax.scatter(std_model[x_col], std_model[y_col], marker='*', color='red', s=400,
+                           edgecolors='black', linewidths=1.5, label='Standard LR', zorder=5)
+                # Scatter the Fairlearn model (gold star)
+                fair_model = df_base[df_base['model_name'] == 'Fairlearn LR (Golden Model)'].iloc[0]
+                ax.scatter(fair_model[x_col], fair_model[y_col], marker='*', color='gold', s=400,
+                           edgecolors='black', linewidths=1.5, label='Fairlearn LR (Golden)', zorder=5)
+                ax.legend(loc='best')
+            
             fig.tight_layout()
             
             fname = f"pareto_2d_{x_col}_vs_{y_col}.png"

@@ -1,0 +1,3 @@
+model_name,balanced_accuracy,dp_violation,model_complexity
+Standard LR (Unconstrained),0.6538947459353617,0.24598208808735122,0.061288502280170826
+Fairlearn LR (Golden Model),0.6363440031962797,0.0219604956447062,0.061288502280170826

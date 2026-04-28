@@ -23,7 +23,7 @@ Decision Variables:
   - class_weight_ratio: [1.0, 5.0]
   - threshold: [0.3, 0.7]
 
-Authors: Niranjan Gopal, Divyam Sareen
+Authors: Daksh Rajesh, Mohammad Owais
 """
 
 import os
