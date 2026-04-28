@@ -1,8 +1,13 @@
+#%% [markdown]
+# # Visualization and Analysis
+# Generating interactive plots for multi-objective optimization results.
+
+#%%
 """
-Visualization & Metrics for MOO Fairness Results
-=================================================
+Visualization & Metrics for MOO Fairness & Complexity Results
+=============================================================
 Generates:
-  - 2D Pareto scatter plots (3 pairwise combinations)
+  - 2D Pareto scatter plots with 2D-dominance highlighting
   - 3D Pareto scatter plot
   - Parallel coordinates plot
   - Hypervolume indicator computation
@@ -24,6 +29,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.lines import Line2D
 import seaborn as sns
 from tabulate import tabulate
+import plotly.graph_objects as go
 
 warnings.filterwarnings('ignore')
 matplotlib.rcParams['font.family'] = 'sans-serif'
@@ -34,6 +40,11 @@ matplotlib.rcParams['font.size'] = 11
 # 1. QUALITY METRICS
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Helper Functions
+# Mathematical operations to compute Pareto dominance and metrics.
+
+#%%
 def compute_hypervolume(pareto_F, ref_point):
     """
     Compute hypervolume indicator for a Pareto front.
@@ -110,134 +121,150 @@ def compute_generational_distance(front_A, front_B):
 # 2. 2D PARETO SCATTER PLOTS
 # ──────────────────────────────────────────────────────────────────────────────
 
-def plot_2d_pareto(df_nsga, df_optuna=None, save_dir='results'):
-    """Generate 3 pairwise 2D Pareto scatter plots."""
+def _is_2d_pareto(x_vals, y_vals, x_minimize=True, y_minimize=True):
+    """
+    Find indices of points that are Pareto-optimal in 2D projection.
+    Points dominated in 2D but kept in 3D Pareto set will be marked non-optimal.
+    """
+    n = len(x_vals)
+    is_pareto = np.ones(n, dtype=bool)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            xb = (x_vals[j] < x_vals[i]) if x_minimize else (x_vals[j] > x_vals[i])
+            xe = (x_vals[j] == x_vals[i]) if x_minimize else (x_vals[j] == x_vals[i])
+            yb = (y_vals[j] < y_vals[i]) if y_minimize else (y_vals[j] > y_vals[i])
+            ye = (y_vals[j] == y_vals[i]) if y_minimize else (y_vals[j] == y_vals[i])
+            if (xb or xe) and (yb or ye) and (xb or yb):
+                is_pareto[i] = False
+                break
+    return is_pareto
+
+
+#%% [markdown]
+# ## Plotting Functions
+# Generates model-specific distributions, convergence charts, and aggregate comparisons.
+
+#%%
+def plot_model_specific_visualizations(df, algo_name, save_dir='results'):
+    """
+    Generate model-specific 2D and 3D Pareto plots in subfolders.
+    Shows dominated points dimmed out in 2D, and generates an interactive 3D HTML plot.
+    """
+    if df is None or len(df) == 0:
+        return
+        
+    algo_dir = os.path.join(save_dir, algo_name)
+    os.makedirs(algo_dir, exist_ok=True)
+
     pairs = [
         ('balanced_accuracy', 'dp_violation',
-         'Balanced Accuracy ↑', 'Demographic Parity Violation ↓',
-         'Accuracy vs. Demographic Parity'),
-        ('balanced_accuracy', 'eo_violation',
-         'Balanced Accuracy ↑', 'Equalized Odds Violation ↓',
-         'Accuracy vs. Equalized Odds'),
-        ('dp_violation', 'eo_violation',
-         'DP Violation ↓', 'EO Violation ↓',
-         'Demographic Parity vs. Equalized Odds'),
+         'Balanced Accuracy ↑', 'DP Violation ↓',
+         'Accuracy vs. Demographic Parity', False, True),
+        ('balanced_accuracy', 'model_complexity',
+         'Balanced Accuracy ↑', 'Model Complexity ↓',
+         'Accuracy vs. Model Complexity', False, True),
+        ('dp_violation', 'model_complexity',
+         'DP Violation ↓', 'Model Complexity ↓',
+         'Demographic Parity vs. Model Complexity', True, True),
     ]
 
-    for x_col, y_col, x_label, y_label, title in pairs:
-        fig, ax = plt.subplots(figsize=(10, 7))
-
-        # NSGA-II points
-        colors_nsga = df_nsga['model_type'].map({
-            'LogisticRegression': '#2196F3',
-            'RandomForest': '#4CAF50',
-            'XGBoost': '#FF9800'
-        })
-        ax.scatter(
-            df_nsga[x_col], df_nsga[y_col],
-            c=colors_nsga, s=120, edgecolors='black', linewidths=0.8,
-            zorder=3, alpha=0.85, label='NSGA-II'
-        )
-
-        # Connect NSGA-II Pareto-optimal front line
-        sorted_nsga = df_nsga.sort_values(x_col)
-        ax.plot(sorted_nsga[x_col], sorted_nsga[y_col],
-                linestyle='--', color='#1565C0', alpha=0.4, zorder=2)
-
-        if df_optuna is not None and len(df_optuna) > 0:
-            ax.scatter(
-                df_optuna[x_col], df_optuna[y_col],
-                c='#E91E63', s=80, marker='D', edgecolors='black',
-                linewidths=0.8, zorder=2, alpha=0.7, label='Optuna NSGA-II'
-            )
-
-        # Annotations for NSGA-II top solutions
-        for _, row in df_nsga.head(8).iterrows():
-            ax.annotate(
-                f"{row['model_type'][:3]}\n{row['threshold']:.2f}",
-                (row[x_col], row[y_col]),
-                textcoords="offset points", xytext=(8, 8),
-                fontsize=7, ha='left',
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.7),
-            )
-
-        # Legend for model types
-        legend_elements = [
-            Line2D([0], [0], marker='o', color='w', markerfacecolor='#2196F3',
-                   markersize=10, label='Logistic Regression'),
-            Line2D([0], [0], marker='o', color='w', markerfacecolor='#4CAF50',
-                   markersize=10, label='Random Forest'),
-            Line2D([0], [0], marker='o', color='w', markerfacecolor='#FF9800',
-                   markersize=10, label='XGBoost'),
-        ]
-        if df_optuna is not None:
-            legend_elements.append(
-                Line2D([0], [0], marker='D', color='w', markerfacecolor='#E91E63',
-                       markersize=8, label='Optuna NSGA-II')
-            )
-        ax.legend(handles=legend_elements, loc='best', fontsize=9)
-
-        ax.set_xlabel(x_label, fontsize=13)
-        ax.set_ylabel(y_label, fontsize=13)
-        ax.set_title(f"Pareto Front: {title}", fontsize=14, fontweight='bold')
-        ax.grid(True, linestyle='--', alpha=0.4)
-        fig.tight_layout()
-
-        fname = f"pareto_2d_{x_col}_vs_{y_col}.png"
-        fig.savefig(os.path.join(save_dir, fname), dpi=150, bbox_inches='tight')
-        print(f"  📈 Saved {fname}")
-        plt.close(fig)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. 3D PARETO SCATTER PLOT
-# ──────────────────────────────────────────────────────────────────────────────
-
-def plot_3d_pareto(df_nsga, df_optuna=None, save_dir='results'):
-    """Generate 3D scatter of all three objectives."""
-    fig = plt.figure(figsize=(12, 9))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # Color by model type
     color_map = {
         'LogisticRegression': '#2196F3',
         'RandomForest': '#4CAF50',
         'XGBoost': '#FF9800'
     }
 
-    for mt, color in color_map.items():
-        mask = df_nsga['model_type'] == mt
-        if mask.any():
-            ax.scatter(
-                df_nsga.loc[mask, 'balanced_accuracy'],
-                df_nsga.loc[mask, 'dp_violation'],
-                df_nsga.loc[mask, 'eo_violation'],
-                c=color, s=100, edgecolors='black', linewidths=0.5,
-                alpha=0.8, label=f'NSGA-II: {mt}'
-            )
+    for model_type in df['model_type'].unique():
+        model_dir = os.path.join(algo_dir, model_type)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        df_model = df[df['model_type'] == model_type].copy()
+        if len(df_model) == 0:
+            continue
+            
+        color = color_map.get(model_type, '#9E9E9E')
+        
+        # --- 1. Interactive 3D Pareto Plot (Plotly) ---
+        hover_text = []
+        for _, row in df_model.iterrows():
+            text = (f"Model: {model_type}<br>"
+                    f"Balanced Acc: {row['balanced_accuracy']:.4f}<br>"
+                    f"DP Violation: {row['dp_violation']:.4f}<br>"
+                    f"Complexity: {row['model_complexity']:.4f}<br>"
+                    f"Threshold: {row['threshold']:.3f}<br>"
+                    f"CW Ratio: {row['class_weight_ratio']:.2f}<br>"
+                    f"Reg: {row.get('regularization', 0):.4f}<br>"
+                    f"Est: {row.get('n_estimators', 0)}<br>"
+                    f"Depth: {row.get('max_depth', 0)}")
+            hover_text.append(text)
+            
+        fig_3d = go.Figure(data=[go.Scatter3d(
+            x=df_model['balanced_accuracy'],
+            y=df_model['dp_violation'],
+            z=df_model['model_complexity'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=color,
+                line=dict(width=1, color='DarkSlateGrey'),
+                opacity=0.8
+            ),
+            text=hover_text,
+            hoverinfo='text'
+        )])
 
-    if df_optuna is not None and len(df_optuna) > 0:
-        ax.scatter(
-            df_optuna['balanced_accuracy'],
-            df_optuna['dp_violation'],
-            df_optuna['eo_violation'],
-            c='#E91E63', s=70, marker='D', edgecolors='black',
-            linewidths=0.5, alpha=0.6, label='Optuna NSGA-II'
+        fig_3d.update_layout(
+            title=f"Interactive 3D Pareto Front: {model_type} ({algo_name})",
+            scene=dict(
+                xaxis_title='Balanced Accuracy ↑',
+                yaxis_title='DP Violation ↓',
+                zaxis_title='Model Complexity ↓'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40)
         )
+        
+        fig_3d.write_html(os.path.join(model_dir, 'interactive_pareto_3d.html'))
 
-    ax.set_xlabel('Balanced Accuracy ↑', fontsize=11, labelpad=10)
-    ax.set_ylabel('DP Violation ↓', fontsize=11, labelpad=10)
-    ax.set_zlabel('EO Violation ↓', fontsize=11, labelpad=10)
-    ax.set_title('3D Pareto Front: All Three Objectives', fontsize=14, fontweight='bold')
-    ax.legend(loc='upper left', fontsize=9)
+        # --- 2. 2D Pareto Plots with Dimmed Dominated Points ---
+        for x_col, y_col, x_label, y_label, title, x_min, y_min in pairs:
+            x_vals = df_model[x_col].values
+            y_vals = df_model[y_col].values
+            
+            # Find points on the 2D Pareto frontier for this model type
+            pareto_mask = _is_2d_pareto(x_vals, y_vals, x_minimize=x_min, y_minimize=y_min)
+            df_pareto = df_model[pareto_mask]
+            df_dominated = df_model[~pareto_mask]
+            
+            fig, ax = plt.subplots(figsize=(10, 7))
+            
+            # Plot the dominated points in the background (dimmed)
+            if len(df_dominated) > 0:
+                ax.scatter(df_dominated[x_col], df_dominated[y_col], c='gray', s=60,
+                           edgecolors='gray', linewidths=0.5, alpha=0.3, 
+                           label=f'{model_type} (Dominated)')
+            
+            # Plot only the 2D Pareto optimal points
+            if len(df_pareto) > 0:
+                ax.scatter(df_pareto[x_col], df_pareto[y_col], c=color, s=140,
+                           edgecolors='black', linewidths=1.0, alpha=0.9, 
+                           label=f'{model_type} (Pareto)')
+                
+                # Connect the Pareto points
+                sorted_par = df_pareto.sort_values(x_col)
+                ax.plot(sorted_par[x_col], sorted_par[y_col],
+                        linestyle='-', color=color, alpha=0.6, linewidth=2)
 
-    # Better viewing angle
-    ax.view_init(elev=25, azim=45)
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, 'pareto_3d_scatter.png'), dpi=150, bbox_inches='tight')
-    print("  📈 Saved pareto_3d_scatter.png")
-    plt.close(fig)
+            ax.set_xlabel(x_label, fontsize=13)
+            ax.set_ylabel(y_label, fontsize=13)
+            ax.set_title(f"2D Pareto: {title}\n{model_type} ({algo_name})", fontsize=14, fontweight='bold')
+            ax.grid(True, linestyle='--', alpha=0.4)
+            fig.tight_layout()
+            
+            fname = f"pareto_2d_{x_col}_vs_{y_col}.png"
+            fig.savefig(os.path.join(model_dir, fname), dpi=150, bbox_inches='tight')
+            plt.close(fig)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -251,13 +278,15 @@ def plot_parallel_coordinates(df_nsga, save_dir='results'):
     """
     # Normalize all columns to [0, 1] for visualization
     plot_cols = [
-        'balanced_accuracy', 'demographic_parity', 'equalized_odds',
+        'balanced_accuracy', 'demographic_parity', 'model_complexity',
         'threshold', 'class_weight_ratio'
     ]
-    df_plot = df_nsga[plot_cols + ['model_type']].copy()
+    # Ensure columns exist
+    available = [c for c in plot_cols if c in df_nsga.columns]
+    df_plot = df_nsga[available + ['model_type']].copy()
 
     # Normalize
-    for col in plot_cols:
+    for col in available:
         rng = df_plot[col].max() - df_plot[col].min()
         if rng > 0:
             df_plot[col + '_norm'] = (df_plot[col] - df_plot[col].min()) / rng
@@ -266,8 +295,8 @@ def plot_parallel_coordinates(df_nsga, save_dir='results'):
 
     fig, ax = plt.subplots(figsize=(14, 7))
 
-    norm_cols = [c + '_norm' for c in plot_cols]
-    x_pos = range(len(plot_cols))
+    norm_cols = [c + '_norm' for c in available]
+    x_pos = range(len(available))
 
     color_map = {
         'LogisticRegression': '#2196F3',
@@ -282,12 +311,18 @@ def plot_parallel_coordinates(df_nsga, save_dir='results'):
 
     # Axis labels
     ax.set_xticks(x_pos)
-    labels = ['Balanced\nAccuracy ↑', 'Demographic\nParity ↑', 'Equalized\nOdds ↑',
-              'Threshold', 'Class Weight\nRatio']
+    label_map = {
+        'balanced_accuracy': 'Balanced\nAccuracy ↑',
+        'demographic_parity': 'Demographic\nParity ↑',
+        'model_complexity': 'Model\nComplexity ↓',
+        'threshold': 'Threshold',
+        'class_weight_ratio': 'Class Weight\nRatio',
+    }
+    labels = [label_map.get(c, c) for c in available]
     ax.set_xticklabels(labels, fontsize=10)
 
     # Add value labels on axes
-    for i, col in enumerate(plot_cols):
+    for i, col in enumerate(available):
         lo, hi = df_nsga[col].min(), df_nsga[col].max()
         ax.annotate(f'{lo:.3f}', (i, -0.05), fontsize=8, ha='center', color='gray')
         ax.annotate(f'{hi:.3f}', (i, 1.05), fontsize=8, ha='center', color='gray')
@@ -395,7 +430,7 @@ def plot_model_distribution(df_nsga, df_optuna=None, save_dir='results'):
 
 def plot_tradeoff_heatmap(df_nsga, save_dir='results'):
     """Correlation heatmap between objectives and decision variables."""
-    cols = ['balanced_accuracy', 'dp_violation', 'eo_violation',
+    cols = ['balanced_accuracy', 'dp_violation', 'model_complexity',
             'threshold', 'class_weight_ratio', 'n_estimators', 'max_depth']
     available_cols = [c for c in cols if c in df_nsga.columns]
 
@@ -456,8 +491,8 @@ def compare_algorithms(nsga_data, optuna_data, ref_point, save_dir='results'):
          f'{df_optuna["balanced_accuracy"].max():.4f}'],
         ['Best DP (min viol.)', f'{df_nsga["dp_violation"].min():.4f}',
          f'{df_optuna["dp_violation"].min():.4f}'],
-        ['Best EO (min viol.)', f'{df_nsga["eo_violation"].min():.4f}',
-         f'{df_optuna["eo_violation"].min():.4f}'],
+        ['Best Complexity (min)', f'{df_nsga["model_complexity"].min():.4f}',
+         f'{df_optuna["model_complexity"].min():.4f}'],
     ]
     print(tabulate(comparison, headers='firstrow', tablefmt='grid'))
 
@@ -520,15 +555,14 @@ def print_pareto_table(df, algorithm_name='NSGA-II'):
             int(row['solution_id']),
             row['model_type'],
             f"{row['balanced_accuracy']:.4f}",
-            f"{row['demographic_parity']:.4f}",
-            f"{row['equalized_odds']:.4f}",
+            f"{row.get('demographic_parity', 1.0 - row.get('dp_violation', 0)):.4f}",
+            f"{row.get('model_complexity', 0):.4f}",
             f"{row['dp_violation']:.4f}",
-            f"{row['eo_violation']:.4f}",
             f"{row['threshold']:.3f}",
             f"{row['class_weight_ratio']:.2f}",
         ])
 
-    headers = ['#', 'Model', 'Bal.Acc', 'DP↑', 'EO↑', 'DP Viol↓', 'EO Viol↓',
+    headers = ['#', 'Model', 'Bal.Acc', 'DP↑', 'Complexity↓', 'DP Viol↓',
                'Thresh', 'CW Ratio']
     print(tabulate(table_data, headers=headers, tablefmt='grid'))
 
@@ -549,10 +583,10 @@ def detailed_solution_analysis(df, save_dir='results'):
                max(df['balanced_accuracy'].max() - df['balanced_accuracy'].min(), 1e-9)
     norm_dp = (df['dp_violation'] - df['dp_violation'].min()) / \
               max(df['dp_violation'].max() - df['dp_violation'].min(), 1e-9)
-    norm_eo = (df['eo_violation'] - df['eo_violation'].min()) / \
-              max(df['eo_violation'].max() - df['eo_violation'].min(), 1e-9)
+    norm_cx = (df['model_complexity'] - df['model_complexity'].min()) / \
+              max(df['model_complexity'].max() - df['model_complexity'].min(), 1e-9)
 
-    composite = norm_acc + norm_dp + norm_eo
+    composite = norm_acc + norm_dp + norm_cx
     knee_idx = composite.idxmin()
     sol = df.loc[knee_idx]
 
@@ -570,16 +604,19 @@ def detailed_solution_analysis(df, save_dir='results'):
     print(f"  Threshold:          {sol['threshold']:.4f}")
     print(f"\n  --- Objective Values ---")
     print(f"  Balanced Accuracy:    {sol['balanced_accuracy']:.4f}")
-    print(f"  Demographic Parity:   {sol['demographic_parity']:.4f} (violation: {sol['dp_violation']:.4f})")
-    print(f"  Equalized Odds:       {sol['equalized_odds']:.4f} (violation: {sol['eo_violation']:.4f})")
+    print(f"  Demographic Parity:   {sol.get('demographic_parity', 1.0 - sol.get('dp_violation', 0)):.4f} (violation: {sol['dp_violation']:.4f})")
+    print(f"  Model Complexity:     {sol['model_complexity']:.4f}")
     print(f"\n  --- Interpretation ---")
     print(f"  This solution balances all three objectives.")
     if sol['dp_violation'] < 0.1:
         print(f"  ✓ Low DP violation ({sol['dp_violation']:.4f}): prediction rates are")
         print(f"    similar across racial groups.")
-    if sol['eo_violation'] < 0.15:
-        print(f"  ✓ Low EO violation ({sol['eo_violation']:.4f}): true positive and")
-        print(f"    false positive rates are relatively balanced across groups.")
+    if sol['model_complexity'] < 0.3:
+        print(f"  ✓ Low complexity ({sol['model_complexity']:.4f}): model is relatively")
+        print(f"    simple and interpretable.")
+    elif sol['model_complexity'] > 0.6:
+        print(f"  ⚠ High complexity ({sol['model_complexity']:.4f}): model is complex,")
+        print(f"    potentially harder to interpret.")
 
     return sol
 
@@ -588,6 +625,11 @@ def detailed_solution_analysis(df, save_dir='results'):
 # MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Main Execution
+# Loading the CSV files, running visualization logic, and reporting statistics.
+
+#%%
 def main():
     save_dir = 'results'
     os.makedirs(save_dir, exist_ok=True)
@@ -600,12 +642,12 @@ def main():
     nsga_data = None
     optuna_data = None
 
-    if os.path.exists('results/nsga2_results.pkl'):
-        with open('results/nsga2_results.pkl', 'rb') as f:
+    if os.path.exists('results/pymoo_results.pkl'):
+        with open('results/pymoo_results.pkl', 'rb') as f:
             nsga_data = pickle.load(f)
-        print(f"✅ Loaded NSGA-II results ({len(nsga_data['pareto_df'])} Pareto solutions)")
+        print(f"✅ Loaded Pymoo results ({len(nsga_data['pareto_df'])} Pareto solutions)")
     else:
-        print("⚠️  NSGA-II results not found. Run moo_nsga2_pymoo.py first.")
+        print("⚠️  Pymoo results not found. Run moo_nsga2_pymoo.py first.")
         return
 
     if os.path.exists('results/optuna_results.pkl'):
@@ -622,7 +664,7 @@ def main():
     ref_point = [1.0, 1.0, 1.0]  # All objectives bounded in [0, 1]
 
     # ── 1. Pareto Tabulation ──
-    print_pareto_table(df_nsga, 'NSGA-II (pymoo)')
+    print_pareto_table(df_nsga, 'Pymoo (NSGA-II)')
     if df_optuna is not None:
         print_pareto_table(df_optuna, 'Optuna NSGA-II')
 
@@ -631,7 +673,7 @@ def main():
     hv_nsga = compute_hypervolume(nsga_F, ref_point)
     sp_nsga = compute_spacing(nsga_F)
 
-    print(f"\n📏 NSGA-II Metrics:")
+    print("\n📏 Pymoo Metrics:")
     print(f"   Hypervolume:  {hv_nsga:.6f}")
     print(f"   Spacing:      {sp_nsga:.6f}")
     print(f"   # Solutions:  {len(df_nsga)}")
@@ -647,8 +689,10 @@ def main():
 
     # ── 3. Plots ──
     print("\n📊 Generating visualizations...")
-    plot_2d_pareto(df_nsga, df_optuna, save_dir)
-    plot_3d_pareto(df_nsga, df_optuna, save_dir)
+    plot_model_specific_visualizations(df_nsga, 'pymoo', save_dir)
+    if df_optuna is not None:
+        plot_model_specific_visualizations(df_optuna, 'optuna', save_dir)
+        
     plot_parallel_coordinates(df_nsga, save_dir)
     plot_model_distribution(df_nsga, df_optuna, save_dir)
     plot_tradeoff_heatmap(df_nsga, save_dir)
@@ -668,5 +712,9 @@ def main():
     print("=" * 70)
 
 
+#%% [markdown]
+# Execute the visualization pipeline.
+
+#%%
 if __name__ == '__main__':
     main()

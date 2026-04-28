@@ -1,13 +1,18 @@
+#%% [markdown]
+# # NSGA-II Optimization with Pymoo
+# Using pymoo to optimize Logistic Regression, Random Forest, and XGBoost models for Accuracy, Fairness, and Complexity.
+
+#%%
 """
-Multi-Objective Optimization for Fairness in Machine Learning
-=============================================================
+Multi-Objective Optimization for Fairness & Complexity in Machine Learning
+=========================================================================
 Primary Algorithm: NSGA-II via pymoo
 Dataset: COMPAS Recidivism (compas-scores-two-years.csv)
 
-3 Objectives (all minimized internally, reported as maximization):
-  1. Maximize Balanced Accuracy  → minimize (1 - balanced_accuracy)
-  2. Maximize Demographic Parity → minimize |P(Ŷ=1|AA) - P(Ŷ=1|C)|
-  3. Maximize Equalized Odds     → minimize max(|TPR_AA - TPR_C|, |FPR_AA - FPR_C|)
+3 Objectives (all minimized internally):
+  1. Minimize (1 - balanced_accuracy)
+  2. Minimize DP violation  |P(Ŷ=1|AA) - P(Ŷ=1|C)|
+  3. Minimize Model Complexity (normalized score in [0, 1])
 
 Decision Variables:
   - model_type: {0: LogisticRegression, 1: RandomForest, 2: XGBoost}
@@ -50,6 +55,11 @@ warnings.filterwarnings('ignore')
 # 1. DATA LOADING & PREPROCESSING
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Data Loading and Preprocessing
+# Loading the COMPAS dataset and preparing it for ML pipelines.
+
+#%%
 def load_and_preprocess_compas(data_path='compas-scores-two-years.csv'):
     """
     Load the COMPAS dataset and apply standard ProPublica filtering.
@@ -133,16 +143,24 @@ def load_and_preprocess_compas(data_path='compas-scores-two-years.csv'):
 # 2. FAIRNESS METRICS
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Metric Definitions
+# Functions to compute DP violation and normalized Model Complexity.
+
+#%%
 def compute_fairness_metrics(y_true, y_pred, sensitive,
                               privileged='Caucasian',
                               unprivileged='African-American'):
     """
-    Compute all three objectives given true labels, predictions, and sensitive attribute.
+    Compute fairness metrics given true labels, predictions, and sensitive attribute.
+
+    Note: EO violation is still computed for reference but is NOT used as an
+    optimization objective (replaced by model complexity).
 
     Returns:
         balanced_acc: Balanced accuracy (higher is better)
         dp_violation: Demographic parity violation |P(Ŷ=1|AA) - P(Ŷ=1|C)| (lower is better)
-        eo_violation: Equalized odds violation max(|ΔTPR|, |ΔFPR|) (lower is better)
+        eo_violation: Equalized odds violation max(|ΔTPR|, |ΔFPR|) (computed for reference)
     """
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
@@ -180,7 +198,37 @@ def compute_fairness_metrics(y_true, y_pred, sensitive,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. MODEL BUILDER
+# 3. MODEL COMPLEXITY METRIC
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_model_complexity(model_type, n_estimators, max_depth,
+                              learning_rate, regularization):
+    """
+    Compute a normalized model complexity score in [0, 1].
+    Higher values = more complex models.
+
+    Logistic Regression:  Low complexity  (~0.05-0.20)
+    Random Forest:        Medium          (~0.30-1.00)
+    XGBoost:              Medium-High     (~0.25-1.00)
+    """
+    if model_type in ('LogisticRegression', 0):
+        C = 1.0 / max(regularization, 1e-6)
+        C_norm = np.log10(C + 1) / np.log10(10001)
+        complexity = 0.05 + 0.15 * C_norm
+    elif model_type in ('RandomForest', 1):
+        est_norm = (n_estimators - 50) / (500 - 50)
+        depth_norm = (max_depth - 2) / (15 - 2)
+        complexity = 0.30 + 0.35 * est_norm + 0.35 * depth_norm
+    else:  # XGBoost
+        est_norm = (n_estimators - 50) / (500 - 50)
+        depth_norm = (max_depth - 2) / (15 - 2)
+        lr_effect = 1.0 - (learning_rate - 0.005) / (0.3 - 0.005)
+        complexity = 0.25 + 0.25 * est_norm + 0.30 * depth_norm + 0.20 * lr_effect
+    return float(np.clip(complexity, 0.0, 1.0))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. MODEL BUILDER
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_and_evaluate(x_vec, X_train, y_train, X_val, y_val, sensitive_val):
@@ -257,12 +305,15 @@ def build_and_evaluate(x_vec, X_train, y_train, X_val, y_val, sensitive_val):
         y_pred = (proba >= threshold).astype(int)
 
         # Compute objectives
-        bal_acc, dp_viol, eo_viol = compute_fairness_metrics(
+        bal_acc, dp_viol, _ = compute_fairness_metrics(
             y_val, y_pred, sensitive_val
         )
+        complexity = compute_model_complexity(
+            model_type, n_est, depth, lr, reg_strength
+        )
 
-        # Return as minimization objectives: (1-bal_acc, dp_viol, eo_viol)
-        return 1.0 - bal_acc, dp_viol, eo_viol, model, threshold
+        # Return as minimization objectives: (1-bal_acc, dp_viol, complexity)
+        return 1.0 - bal_acc, dp_viol, complexity, model, threshold
 
     except Exception as e:
         # Return worst-case objectives on failure
@@ -279,6 +330,11 @@ class FairnessMOOProblem(Problem):
     All objectives are minimized.
     """
 
+#%% [markdown]
+# ## Pymoo Problem Definition
+# Setting up the multi-objective problem for the genetic algorithm.
+
+#%%
     def __init__(self, X_train, y_train, X_val, y_val, sensitive_val):
         # 7 decision variables
         xl = np.array([0.0, 1e-4, 0.005, 50.0, 2.0, 1.0, 0.3])
@@ -310,7 +366,7 @@ class FairnessMOOProblem(Problem):
             )
             F[i, 0] = obj1  # 1 - balanced_accuracy
             F[i, 1] = obj2  # DP violation
-            F[i, 2] = obj3  # EO violation
+            F[i, 2] = obj3  # Model complexity
 
         self._eval_count += X.shape[0]
         if self._eval_count % 200 == 0:
@@ -351,9 +407,8 @@ def evaluate_on_test(pareto_X, X_train_full, y_train_full,
             'threshold': float(x_vec[6]),
             'balanced_accuracy': 1.0 - obj1,
             'dp_violation': obj2,
-            'eo_violation': obj3,
+            'model_complexity': obj3,
             'demographic_parity': 1.0 - obj2,
-            'equalized_odds': 1.0 - obj3,
             'obj1_min': obj1,
             'obj2_min': obj2,
             'obj3_min': obj3,
@@ -366,12 +421,17 @@ def evaluate_on_test(pareto_X, X_train_full, y_train_full,
 # 6. MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Main Execution
+# Setting up the algorithm parameters and running the optimization loop.
+
+#%%
 def main():
     print("=" * 70)
-    print("  MULTI-OBJECTIVE OPTIMIZATION FOR FAIRNESS IN ML")
+    print("  MULTI-OBJECTIVE OPTIMIZATION FOR FAIRNESS & COMPLEXITY IN ML")
     print("  Algorithm: NSGA-II (pymoo)")
     print("  Dataset: COMPAS Recidivism")
-    print("  Objectives: Balanced Accuracy, Demographic Parity, Equalized Odds")
+    print("  Objectives: Balanced Accuracy, Demographic Parity, Model Complexity")
     print("=" * 70)
 
     # ── Load data ──
@@ -392,18 +452,18 @@ def main():
 
     # ── Configure NSGA-II ──
     algorithm = NSGA2(
-        pop_size=60,
+        pop_size=150,
         sampling=FloatRandomSampling(),
         crossover=SBX(prob=0.9, eta=15),
         mutation=PM(eta=20),
         eliminate_duplicates=True
     )
 
-    termination = get_termination("n_gen", 40)
+    termination = get_termination("n_gen", 150)
 
     print("\n🚀 Starting NSGA-II optimization...")
-    print(f"   Population: 60, Generations: 40")
-    print(f"   Total evaluations: ~2,400\n")
+    print(f"   Population: 150, Generations: 150")
+    print(f"   Total evaluations: ~22,500\n")
 
     start_time = time.time()
 
@@ -434,7 +494,7 @@ def main():
 
     display_cols = [
         'solution_id', 'model_type', 'balanced_accuracy',
-        'demographic_parity', 'equalized_odds',
+        'demographic_parity', 'model_complexity',
         'threshold', 'class_weight_ratio'
     ]
     print(pareto_df[display_cols].to_string(index=False, float_format='%.4f'))
@@ -442,8 +502,8 @@ def main():
     # ── Save results ──
     os.makedirs('results', exist_ok=True)
 
-    pareto_df.to_csv('results/nsga2_pareto_front.csv', index=False)
-    print(f"\n💾 Pareto front saved to results/nsga2_pareto_front.csv")
+    pareto_df.to_csv('results/pymoo_pareto_front.csv', index=False)
+    print(f"\n💾 Pareto front saved to results/pymoo_pareto_front.csv")
 
     # Save full optimization history for analysis
     history_data = {
@@ -457,38 +517,44 @@ def main():
         'history_X': [gen.pop.get("X") for gen in res.history] if res.history else None,
     }
 
-    with open('results/nsga2_results.pkl', 'wb') as f:
+    with open('results/pymoo_results.pkl', 'wb') as f:
         pickle.dump(history_data, f)
-    print(f"💾 Full results saved to results/nsga2_results.pkl")
+    print(f"💾 Full results saved to results/pymoo_results.pkl")
 
     # ── Summary stats ──
     print("\n" + "=" * 70)
     print("  SUMMARY STATISTICS")
     print("=" * 70)
-    print(f"  Balanced Accuracy range: [{pareto_df['balanced_accuracy'].min():.4f}, {pareto_df['balanced_accuracy'].max():.4f}]")
-    print(f"  Demographic Parity range: [{pareto_df['demographic_parity'].min():.4f}, {pareto_df['demographic_parity'].max():.4f}]")
-    print(f"  Equalized Odds range:     [{pareto_df['equalized_odds'].min():.4f}, {pareto_df['equalized_odds'].max():.4f}]")
+    print(f"  Balanced Accuracy range:  [{pareto_df['balanced_accuracy'].min():.4f}, {pareto_df['balanced_accuracy'].max():.4f}]")
     print(f"  DP Violation range:       [{pareto_df['dp_violation'].min():.4f}, {pareto_df['dp_violation'].max():.4f}]")
-    print(f"  EO Violation range:       [{pareto_df['eo_violation'].min():.4f}, {pareto_df['eo_violation'].max():.4f}]")
+    print(f"  Model Complexity range:   [{pareto_df['model_complexity'].min():.4f}, {pareto_df['model_complexity'].max():.4f}]")
 
     # ── Highlight a key trade-off ──
     best_acc_idx = pareto_df['balanced_accuracy'].idxmax()
     best_fair_idx = pareto_df['dp_violation'].idxmin()
+    simplest_idx = pareto_df['model_complexity'].idxmin()
 
-    print("\n  📌 KEY TRADE-OFF:")
+    print("\n  📌 KEY TRADE-OFFS:")
     ba = pareto_df.loc[best_acc_idx]
     bf = pareto_df.loc[best_fair_idx]
-    print(f"  Highest accuracy solution: BalAcc={ba['balanced_accuracy']:.4f}, "
-          f"DP={ba['dp_violation']:.4f}, EO={ba['eo_violation']:.4f}")
-    print(f"  Fairest solution:          BalAcc={bf['balanced_accuracy']:.4f}, "
-          f"DP={bf['dp_violation']:.4f}, EO={bf['eo_violation']:.4f}")
+    bs = pareto_df.loc[simplest_idx]
+    print(f"  Highest accuracy:  BalAcc={ba['balanced_accuracy']:.4f}, "
+          f"DP={ba['dp_violation']:.4f}, Complexity={ba['model_complexity']:.4f}")
+    print(f"  Fairest solution:  BalAcc={bf['balanced_accuracy']:.4f}, "
+          f"DP={bf['dp_violation']:.4f}, Complexity={bf['model_complexity']:.4f}")
+    print(f"  Simplest model:    BalAcc={bs['balanced_accuracy']:.4f}, "
+          f"DP={bs['dp_violation']:.4f}, Complexity={bs['model_complexity']:.4f}")
 
-    acc_drop = ba['balanced_accuracy'] - bf['balanced_accuracy']
-    dp_gain = ba['dp_violation'] - bf['dp_violation']
-    print(f"  → Dropping {acc_drop:.4f} in accuracy yields {dp_gain:.4f} improvement in DP fairness")
+    acc_drop = ba['balanced_accuracy'] - bs['balanced_accuracy']
+    comp_gain = ba['model_complexity'] - bs['model_complexity']
+    print(f"  → Dropping {acc_drop:.4f} in accuracy yields {comp_gain:.4f} reduction in complexity")
 
     return pareto_df, history_data
 
 
+#%% [markdown]
+# Run the optimization cell.
+
+#%%
 if __name__ == '__main__':
     pareto_df, history_data = main()

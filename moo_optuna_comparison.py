@@ -1,13 +1,18 @@
+#%% [markdown]
+# # Optuna NSGA-II Comparison
+# Using Optuna's multi-objective sampler to optimize ML models for Accuracy, Fairness, and Complexity.
+
+#%%
 """
-Multi-Objective Optimization for Fairness in ML — Optuna Comparison
-====================================================================
+Multi-Objective Optimization for Fairness & Complexity in ML — Optuna Comparison
+==================================================================================
 Comparison Algorithm: Optuna with NSGAIISampler (native multi-objective)
 Dataset: COMPAS Recidivism
 
-Same 3 objectives as NSGA-II:
+3 Objectives (all minimized):
   1. Minimize (1 - balanced_accuracy)
   2. Minimize DP violation
-  3. Minimize EO violation
+  3. Minimize Model Complexity
 
 This script provides a direct comparison against the pymoo NSGA-II results.
 """
@@ -37,12 +42,61 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 0. MODEL COMPLEXITY METRIC
+# ──────────────────────────────────────────────────────────────────────────────
+
+#%% [markdown]
+# ## Metric Definitions
+# Functions to calculate model complexity.
+
+#%%
+def compute_model_complexity(model_type, n_estimators, max_depth,
+                              learning_rate, regularization):
+    """
+    Compute a normalized model complexity score in [0, 1].
+    Higher values = more complex models.
+
+    Logistic Regression:  Low complexity  (~0.05–0.20)
+    Random Forest:        Medium          (~0.30–1.00)
+    XGBoost:              Medium-High     (~0.25–1.00)
+
+    This metric naturally conflicts with accuracy (more complex models
+    tend to be more accurate) creating a meaningful MOO trade-off.
+    """
+    if model_type in ('LogisticRegression', 0):
+        # LR complexity: driven by inverse regularization (C = 1/reg)
+        C = 1.0 / max(regularization, 1e-6)
+        C_norm = np.log10(C + 1) / np.log10(10001)
+        complexity = 0.05 + 0.15 * C_norm
+
+    elif model_type in ('RandomForest', 1):
+        est_norm = (n_estimators - 50) / (500 - 50)
+        depth_norm = (max_depth - 2) / (15 - 2)
+        complexity = 0.30 + 0.35 * est_norm + 0.35 * depth_norm
+
+    else:  # XGBoost
+        est_norm = (n_estimators - 50) / (500 - 50)
+        depth_norm = (max_depth - 2) / (15 - 2)
+        # Lower learning rate → needs more effective trees → more complex
+        lr_effect = 1.0 - (learning_rate - 0.005) / (0.3 - 0.005)
+        complexity = 0.25 + 0.25 * est_norm + 0.30 * depth_norm + 0.20 * lr_effect
+
+    return float(np.clip(complexity, 0.0, 1.0))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 1. OPTUNA OBJECTIVE (MULTI-OBJECTIVE)
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Optuna Objective Function
+# Evaluates a trial configuration against the 3 objectives.
+
+#%%
 def optuna_objective(trial, X_train, y_train, X_val, y_val, sensitive_val):
     """
     Optuna objective returning 3 values for native multi-objective optimization.
+    Objectives: (1 - balanced_accuracy, dp_violation, model_complexity)
     """
     # ── Decision variables ──
     model_type = trial.suggest_categorical('model_type', ['LogisticRegression', 'RandomForest', 'XGBoost'])
@@ -52,6 +106,11 @@ def optuna_objective(trial, X_train, y_train, X_val, y_val, sensitive_val):
     class_weight_ratio = trial.suggest_float('class_weight_ratio', 1.0, 5.0)
     threshold = trial.suggest_float('threshold', 0.3, 0.7)
     learning_rate = trial.suggest_float('learning_rate', 0.005, 0.3, log=True)
+
+    # ── Compute model complexity (objective 3) ──
+    complexity = compute_model_complexity(
+        model_type, n_estimators, max_depth, learning_rate, regularization
+    )
 
     # ── Build model ──
     sample_weight = np.ones(len(y_train))
@@ -99,11 +158,11 @@ def optuna_objective(trial, X_train, y_train, X_val, y_val, sensitive_val):
         proba = model.predict_proba(X_val)[:, 1]
         y_pred = (proba >= threshold).astype(int)
 
-        bal_acc, dp_viol, eo_viol = compute_fairness_metrics(
+        bal_acc, dp_viol, _ = compute_fairness_metrics(
             y_val, y_pred, sensitive_val
         )
 
-        return 1.0 - bal_acc, dp_viol, eo_viol
+        return 1.0 - bal_acc, dp_viol, complexity
 
     except Exception:
         return 1.0, 1.0, 1.0
@@ -127,6 +186,9 @@ def evaluate_optuna_pareto(best_trials, X_train_full, y_train_full,
         cw = params['class_weight_ratio']
         threshold = params['threshold']
         lr = params['learning_rate']
+
+        # Compute model complexity
+        complexity = compute_model_complexity(model_type, n_est, depth, lr, reg)
 
         sample_weight = np.ones(len(y_train_full))
         sample_weight[y_train_full == 1] = cw
@@ -156,11 +218,11 @@ def evaluate_optuna_pareto(best_trials, X_train_full, y_train_full,
             proba = model.predict_proba(X_test)[:, 1]
             y_pred = (proba >= threshold).astype(int)
 
-            bal_acc, dp_viol, eo_viol = compute_fairness_metrics(
+            bal_acc, dp_viol, _ = compute_fairness_metrics(
                 y_test, y_pred, sensitive_test
             )
         except Exception:
-            bal_acc, dp_viol, eo_viol = 0.0, 1.0, 1.0
+            bal_acc, dp_viol = 0.0, 1.0
 
         results.append({
             'solution_id': i + 1,
@@ -173,12 +235,11 @@ def evaluate_optuna_pareto(best_trials, X_train_full, y_train_full,
             'threshold': threshold,
             'balanced_accuracy': bal_acc,
             'dp_violation': dp_viol,
-            'eo_violation': eo_viol,
+            'model_complexity': complexity,
             'demographic_parity': 1.0 - dp_viol,
-            'equalized_odds': 1.0 - eo_viol,
             'obj1_min': 1.0 - bal_acc,
             'obj2_min': dp_viol,
-            'obj3_min': eo_viol,
+            'obj3_min': complexity,
         })
 
     return pd.DataFrame(results)
@@ -188,11 +249,17 @@ def evaluate_optuna_pareto(best_trials, X_train_full, y_train_full,
 # 3. MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────────────────────
 
+#%% [markdown]
+# ## Main Execution
+# Preparing the data and launching the Optuna study.
+
+#%%
 def main():
     print("=" * 70)
-    print("  MULTI-OBJECTIVE OPTIMIZATION FOR FAIRNESS IN ML")
+    print("  MULTI-OBJECTIVE OPTIMIZATION FOR FAIRNESS & COMPLEXITY IN ML")
     print("  Algorithm: Optuna NSGA-II (Comparison)")
     print("  Dataset: COMPAS Recidivism")
+    print("  Objectives: Balanced Accuracy, Demographic Parity, Model Complexity")
     print("=" * 70)
 
     # ── Load data ──
@@ -209,13 +276,13 @@ def main():
     y_val = y_val.reset_index(drop=True)
 
     # ── Create multi-objective study ──
-    N_TRIALS = 400
+    N_TRIALS = 2500
 
     sampler = optuna.samplers.NSGAIISampler(seed=42)
     study = optuna.create_study(
         directions=['minimize', 'minimize', 'minimize'],
         sampler=sampler,
-        study_name='fairness_moo_optuna'
+        study_name='fairness_complexity_moo_optuna'
     )
 
     print(f"\n🚀 Starting Optuna NSGA-II optimization ({N_TRIALS} trials)...\n")
@@ -249,7 +316,7 @@ def main():
 
     display_cols = [
         'solution_id', 'model_type', 'balanced_accuracy',
-        'demographic_parity', 'equalized_odds',
+        'demographic_parity', 'model_complexity',
         'threshold', 'class_weight_ratio'
     ]
     print(pareto_df[display_cols].to_string(index=False, float_format='%.4f'))
@@ -288,12 +355,16 @@ def main():
     print("\n" + "=" * 70)
     print("  SUMMARY STATISTICS")
     print("=" * 70)
-    print(f"  Balanced Accuracy range: [{pareto_df['balanced_accuracy'].min():.4f}, {pareto_df['balanced_accuracy'].max():.4f}]")
-    print(f"  DP Violation range:      [{pareto_df['dp_violation'].min():.4f}, {pareto_df['dp_violation'].max():.4f}]")
-    print(f"  EO Violation range:      [{pareto_df['eo_violation'].min():.4f}, {pareto_df['eo_violation'].max():.4f}]")
+    print(f"  Balanced Accuracy range:  [{pareto_df['balanced_accuracy'].min():.4f}, {pareto_df['balanced_accuracy'].max():.4f}]")
+    print(f"  DP Violation range:       [{pareto_df['dp_violation'].min():.4f}, {pareto_df['dp_violation'].max():.4f}]")
+    print(f"  Model Complexity range:   [{pareto_df['model_complexity'].min():.4f}, {pareto_df['model_complexity'].max():.4f}]")
 
     return pareto_df, history_data
 
 
+#%% [markdown]
+# Run the optimization cell.
+
+#%%
 if __name__ == '__main__':
     pareto_df, history_data = main()
