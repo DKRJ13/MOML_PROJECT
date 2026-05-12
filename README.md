@@ -64,7 +64,7 @@ python visualize_results.py
 
 ---
 
-## 📂 Expected Output Architecture
+## Expected Output Architecture
 
 Running `visualize_results.py` will generate a rich set of analysis files in the `results/` folder:
 
