@@ -1,4 +1,4 @@
-# ⚖️ Multi-Objective Optimization for Fairness & Complexity in ML
+# Multi-Objective Optimization for Fairness & Complexity in ML
 
 This project implements advanced multi-objective optimization (MOO) to simultaneously balance **predictive performance**, **algorithmic fairness**, and **model complexity** in a recidivism prediction model using the COMPAS dataset. 
 
@@ -6,7 +6,7 @@ Instead of traditional hyperparameter tuning that optimizes a single metric, thi
 
 ---
 
-## 🎯 Three Conflicting Objectives
+## Three Conflicting Objectives
 All objectives are mathematically minimized by the algorithms:
 
 1. **Maximize Balanced Accuracy** 📈
@@ -21,7 +21,7 @@ All objectives are mathematically minimized by the algorithms:
 
 ---
 
-## 🧬 Decision Variables (The Search Space)
+## Decision Variables (The Search Space)
 The algorithms search across 7 discrete and continuous variables simultaneously:
 
 | Variable | Range | Description |
@@ -36,7 +36,7 @@ The algorithms search across 7 discrete and continuous variables simultaneously:
 
 ---
 
-## 🚀 Setup & Execution
+## Setup & Execution
 
 ### 1. Installation
 Ensure you have a Python virtual environment set up, then install the dependencies:
@@ -69,18 +69,18 @@ python visualize_results.py
 Running `visualize_results.py` will generate a rich set of analysis files in the `results/` folder:
 
 ### Global Aggregate Summaries (Root `results/` folder)
-- 📊 `algorithm_comparison.png` — Head-to-head bar charts (Hypervolume, Spacing) comparing Pymoo vs Optuna.
-- 📉 `hv_convergence.png` — Line graph tracking Hypervolume optimization over generations.
-- 🧮 `parallel_coordinates.png` — Tracks the hyperparameter DNA of every single Pareto-optimal solution.
-- 🧩 `model_distribution.png` — Bar chart showing which model types dominated the Pareto front.
-- 🌡️ `tradeoff_heatmap.png` — Correlation grid exposing exactly how Accuracy fights against Fairness.
+- `algorithm_comparison.png` — Head-to-head bar charts (Hypervolume, Spacing) comparing Pymoo vs Optuna.
+- `hv_convergence.png` — Line graph tracking Hypervolume optimization over generations.
+- `parallel_coordinates.png` — Tracks the hyperparameter DNA of every single Pareto-optimal solution.
+- `model_distribution.png` — Bar chart showing which model types dominated the Pareto front.
+- `tradeoff_heatmap.png` — Correlation grid exposing exactly how Accuracy fights against Fairness.
 
 ### Model-Specific Projections (`results/pymoo/` and `results/optuna/`)
 Inside each algorithm's subfolder, results are further broken down by model type (e.g., `results/pymoo/RandomForest/`):
-- 🌐 **`interactive_pareto_3d.html`** — A fully interactive Plotly 3D scatter plot. Open this in your browser to rotate the 3D Pareto frontier and hover over points to see exact hyperparameters!
-- 🖼️ **`pareto_2d_*.png`** — Three static 2D projection views of the 3D space. **Dominated points are visible as a dimmed cloud in the background** to provide visual context for the Pareto frontier drawn across them.
+- **`interactive_pareto_3d.html`** — A fully interactive Plotly 3D scatter plot. Open this in your browser to rotate the 3D Pareto frontier and hover over points to see exact hyperparameters!
+- **`pareto_2d_*.png`** — Three static 2D projection views of the 3D space. **Dominated points are visible as a dimmed cloud in the background** to provide visual context for the Pareto frontier drawn across them.
 
 ---
 
-## 👥 Authors
+## Authors
 Daksh Rajesh, Mohammad Owais
