@@ -12,10 +12,10 @@ All objectives are mathematically minimized by the algorithms:
 1. **Maximize Balanced Accuracy** 📈
    - Minimized as `(1 - balanced_accuracy)`
    - Ensures the model remains robust against class imbalance.
-2. **Maximize Demographic Parity** 🤝
+2. **Maximize Demographic Parity** 
    - Minimized as `|P(Ŷ=1|African-American) - P(Ŷ=1|Caucasian)|`
    - Ensures the positive prediction rate is equal across racial groups.
-3. **Minimize Model Complexity** 🧠
+3. **Minimize Model Complexity** 
    - A normalized metric `[0, 1]` based on tree depth, number of estimators, and model type.
    - Ensures the chosen model remains as simple, interpretable, and computationally cheap as possible.
 
