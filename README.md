@@ -9,7 +9,7 @@ Instead of traditional hyperparameter tuning that optimizes a single metric, thi
 ## Three Conflicting Objectives
 All objectives are mathematically minimized by the algorithms:
 
-1. **Maximize Balanced Accuracy** 📈
+1. **Maximize Balanced Accuracy** 
    - Minimized as `(1 - balanced_accuracy)`
    - Ensures the model remains robust against class imbalance.
 2. **Maximize Demographic Parity** 
